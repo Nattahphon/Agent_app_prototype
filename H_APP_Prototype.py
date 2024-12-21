@@ -67,6 +67,8 @@ class StreamlitApp:
         if user_query:
             response = self.agent.run(user_query)
             st.json(response, expanded=2)
+            if response['sub_response']:
+                st.code(response['sub_response']['pandas_agent']['code'])
 
 # Run the app
 if __name__ == "__main__":
