@@ -65,7 +65,8 @@ class StreamlitApp:
         # Chat input
         user_query = st.chat_input("What would you like to ask?")
         if user_query:
-            self.run_query(user_query)
+            response = self.agent.run(user_query)
+            st.json(response, expanded=2)
 
 # Run the app
 if __name__ == "__main__":
