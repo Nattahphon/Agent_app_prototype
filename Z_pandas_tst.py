@@ -1,4 +1,5 @@
 import os
+import pprint
 import pandas as pd
 import logging
 from dotenv import load_dotenv
@@ -9,14 +10,12 @@ from H_datahandle_app import DataHandler
 from langchain.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 import json
-import numpy as np
-import matplotlib as plt
-from langchain.output_parsers import OutputFixingParser
-import re
+# Disable LangSmith tracking
+os.environ["LANGCHAIN_TRACING_V2"] = "false"
 
 # First, create a Pydantic model for your output structure
 class PlotResponse(BaseModel):
-    query: str = Field(description="Description of what the code does")
+    query: str = Field(description="User query")
     explanation: str = Field(description="Detailed explanation of the analysis")
     code: str = Field(description="The python code")
 
@@ -25,7 +24,6 @@ class PandasAgent:
         self.handler = DataHandler(dataset_paths=dataset_paths)
         self.handler.load_data()
         self.handler.preprocess_data()
-
         self.temperature = temperature
         self.base_url = base_url
         self.model_name = model_name
@@ -58,7 +56,7 @@ class PandasAgent:
         You are working with a DataFrame. Columns are: {', '.join(df.columns)}.
         Your role is to analyze and manipulate DataFrames in Python.
         Your output must strictly follow this JSON format: {self.output_parser.get_format_instructions()}
-        """
+        """.strip()
 
         # Suffix: รายละเอียดเฉพาะของบริบทและข้อกำหนดเพิ่มเติม
         suffix = """
@@ -81,7 +79,7 @@ class PandasAgent:
        - NO triple quotes in the code
        - Use single quotes for strings
         6. DO NOT include any text outside of the JSON structure
-        """
+        """.strip()
         return create_pandas_dataframe_agent(
             llm=self.llm,
             df=df,
@@ -91,56 +89,6 @@ class PandasAgent:
             verbose=False,
             allow_dangerous_code=True,  
         )
-
-    # def extract_code_snippet(self, response: str) -> str:
-    #     """Extract Python code from agent response."""
-    #     match = re.search(r'```(?:python|code)?\n(.*?)\n```', response, re.DOTALL)
-    #     return match.group(1).strip() if match else response.strip()
-
-    # def execute_code(self, code: str, context: dict):
-    #     """Safely execute Python code."""
-    #     try:
-    #         exec(code, context)
-    #     # except Exception as e:
-    #     #     logging.error(f"Error executing code: {e}")
-    #     except:
-    #         pass
-
-
-    # def run(self, query: str, dataset_key: str):
-    #     """Handle user interactions."""
-    #     logging.info("Available datasets: %s", ", ".join(self.handler._data.keys()))
-    #     agent = self.create_agent(dataset_key)
-    #     response = agent.invoke({"input": query})
-    #     try:
-    #         # Try to parse the output directly if it's already JSON
-    #         if isinstance(response['output'], str):
-    #             parsed_output = json.loads(response['output'])
-    #         else:
-    #             parsed_output = response['output']
-            
-    #         # Validate against our Pydantic model
-    #         validated_output = PlotResponse(**parsed_output)
-            
-    #         print("\n--- Parsed Output ---")
-    #         # Change from .dict() to .model_dump()
-    #         print(validated_output.model_dump())
-    #         exec(validated_output['code'])
-
-                       
-    #         # Separate code snippet and explanation
-    #         # code_snippet = self.extract_code_snippet(response["output"])
-    #         # explanation = response["output"].replace(f"```python\n{code_snippet}\n```", "").strip()
-            
-    #         # print("\n--- Explanation ---")
-    #         # print(explanation)
-    #         # print("\n--- Python Code ---")
-    #         # print(code_snippet)
-    #         # print("\n--- Executing Code ---")
-    #         # context = {"pd": pd, "df": self.handler.get_data(dataset_key)}
-    #         # self.execute_code(code_snippet, context)
-    #     except Exception as e:
-    #         logging.error(f"An error occurred: {e}")
 
     def extract_code_snippet(self, parsed_output: dict) -> str:
         """Extract Python code from parsed JSON output."""
@@ -165,8 +113,8 @@ class PandasAgent:
             print(f"Error: {str(e)}")
 
 
-    def run(self, query: str, dataset_key: str):
-        """Handle user interactions."""
+    def run(self, query: str, dataset_key: str) -> dict:
+        """Handle user interactions and return structured JSON."""
         logging.info("Available datasets: %s", ", ".join(self.handler._data.keys()))
         
         try:
@@ -183,30 +131,31 @@ class PandasAgent:
                 # Validate against Pydantic model
                 validated_output = PlotResponse(**parsed_output)
                 
-                print("\n--- Parsed Output ---")
-                print(validated_output.model_dump())
-                
-                # Extract and execute code
-                code = self.extract_code_snippet(validated_output.model_dump())
-                if code:
-                    print("\n--- Executing Code ---")
-                    context = {
-                        "pd": pd, 
-                        "df": self.handler.get_data(dataset_key),
-                        "np": np,   
-                        "plt":plt, 
-                    }
-                    self.execute_code(code, context)
-                
+                return {"status": "success", "data": validated_output.model_dump()}
+            
             except json.JSONDecodeError as e:
                 logging.error(f"Error parsing JSON: {e}")
-                new_parser = OutputFixingParser.from_llm(parser=self.output_parser, llm=agent)
-                new_parser.parse(parsed_output)
+                return {"status": "error", "message": f"JSON parsing error: {e}"}
             except Exception as e:
                 logging.error(f"Error processing output: {e}")
-                
+                return {"status": "error", "message": f"Processing error: {e}"}
+            
         except Exception as e:
             logging.error(f"An error occurred: {e}")
+            return {"status": "error", "message": str(e)}
+        
+    def run_and_return_code(self, query: str, dataset_key: str) -> dict:
+        """Run the query and return the code snippet and explanation."""
+        result = self.run(query, dataset_key)
+        if result.get("status") == "success":
+            data = result.get("data", {})
+            return {
+                "query": data.get('query'),
+                "code": data.get("code"),
+                "explanation": data.get("explanation")
+            }
+        else:
+            return {"error": result.get("message", "Unknown error")}
 
 
 
@@ -223,6 +172,12 @@ if __name__ == '__main__':
         model_name="typhoon-v1.5x-70b-instruct",
         dataset_paths=file_paths
     )
-    agent.run(query= 'show me a deep insight and describe it', 
-              dataset_key= 'Financials'
-              )
+    handler = DataHandler(dataset_paths=file_paths)
+    handler.load_data()
+    handler.preprocess_data()
+    df = handler.get_data('Financials')
+    query = "df info"
+    result = agent.run_and_return_code(query=query, dataset_key="Financials")
+    # pprint.pprint(result)
+    print((result))
+    exec(result['code'])
