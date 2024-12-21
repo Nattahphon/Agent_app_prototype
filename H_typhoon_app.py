@@ -82,12 +82,12 @@ class TyphoonAgent:
                 ),
             )
 
-            summary_tool = Tool(
-                name="summary_agent",
-                func=self.summary_answer,
-                description="Use for summarizing results or creating concise explanations.",
-            )
-            return [pandas_tool, summary_tool]
+            # summary_tool = Tool(
+            #     name="summary_agent",
+            #     func=self.summary_answer,
+            #     description="Use for summarizing results or creating concise explanations.",
+            # )
+            return [pandas_tool]
     
     def summary_answer(self, user_input: str) -> None:
         return self.summary_agent.summarize(user_input)

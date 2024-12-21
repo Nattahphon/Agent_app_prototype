@@ -1,121 +1,108 @@
-import streamlit as st
-import io
-import sys
 import os
+import sys
+import pandas as pd
+import logging
+import streamlit as st
 from dotenv import load_dotenv
 from H_typhoon_app import TyphoonAgent
 import matplotlib.pyplot as plt
+import io
+from H_datahandle_app import DataHandler
+from datetime import datetime
+import pytz
 
-def main():
+class StreamlitApp:
+    def __init__(self, temperature: float, base_url: str, model_name: str, uploaded_files: list, dataset_key: str, save_directory: str):
+        self.temperature = temperature
+        self.base_url = base_url
+        self.model = model_name
+        self.dataset_key = dataset_key
+        self.uploaded_files = uploaded_files
+        self.save_directory = save_directory
+        self.dataset_paths = self.save_uploaded_files()
+        self.handler = DataHandler(dataset_paths=self.dataset_paths)
+        self.handler.load_data()
+        self.handler.preprocess_data()
+        self.agent = self.initialize_agent()
+
+        # Initialize session state messages if not already initialized
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
+
+    def save_uploaded_files(self):
+        """Save uploaded files to a specified directory and return a dictionary of file paths."""
+        if not os.path.exists(self.save_directory):
+            os.makedirs(self.save_directory)
+
+        dataset_paths = {}
+        for uploaded_file in self.uploaded_files:
+            file_path = os.path.join(self.save_directory, uploaded_file.name)
+            try:
+                with open(file_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                dataset_paths[uploaded_file.name] = file_path
+            except Exception as e:
+                st.warning(f"Error saving file {uploaded_file.name}: {e}")
+        return dataset_paths
+
+    def initialize_agent(self):
+        """Initialize the TyphoonAgent."""
+        return TyphoonAgent(
+            temperature=self.temperature,
+            base_url=self.base_url,
+            model_name=self.model,
+            dataset_paths=self.dataset_paths,
+            dataset_key=self.dataset_key
+        )
+
+
+
+    def main(self):
+        """Main application logic."""
+        st.title("Data Analysis Chat Assistant")
+        st.write(f"Current Dataset: {self.dataset_key}")
+
+        # Chat input
+        user_query = st.chat_input("What would you like to ask?")
+        if user_query:
+            self.run_query(user_query)
+
+# Run the app
+if __name__ == "__main__":
     load_dotenv()
+    
+    st.sidebar.header('Agent Options')
+    
+    # File upload
+    uploaded_files = st.sidebar.file_uploader(
+        "Choose CSV files",
+        accept_multiple_files=True
+    )
 
-    st.title("Streamlit Chat App with Pandas Agent")
-    st.write("Chat with the DataFrame to analyze or interact with it.")
+    if not uploaded_files:
+        st.error("Please upload CSV files to begin analysis.")
+        sys.exit(1)
 
-    # File paths (adjust based on your setup)
-    filepaths = ['./McDonald_s_Reviews.csv', './Financials.csv']
-
-    # Helper function to map file names to paths
-    def get_filepath(filepaths: list) -> dict:
-        valid_paths = {}
-        for filepath in filepaths:
-            if os.path.exists(filepath):
-                valid_paths[filepath.split('/')[-1]] = filepath
-            else:
-                st.warning(f"File not found: {filepath}")
-        return valid_paths
-
-    file_paths = get_filepath(filepaths)
-
-    # Check if there are valid files
-    if not file_paths:
-        st.error("No valid files found. Please check the file paths.")
-        return
-
-    st.sidebar.header('Agent option')
-    # Temperature selection
+    # Temperature slider
     temp = st.sidebar.select_slider(
         'Set temperature',
         options=[round(i * 0.1, 1) for i in range(0, 11)],
         value=0.1
     )
 
-    # Dataset selection
-    dataset_key = st.sidebar.selectbox("Select a dataset", file_paths.keys())
+    # Dataset selector
+    dataset_key = st.sidebar.selectbox(
+        "Select a dataset",
+        [file.name for file in uploaded_files]
+    )
 
-    # Initialize the TyphoonAgent
-    agent = TyphoonAgent(
+    # Initialize and run app
+    app = StreamlitApp(
         temperature=temp,
         base_url="https://api.opentyphoon.ai/v1",
         model_name="typhoon-v1.5x-70b-instruct",
-        dataset_paths=file_paths,
-        dataset_key=dataset_key
+        uploaded_files=uploaded_files,
+        dataset_key=dataset_key,
+        save_directory="./uploaded_files"
     )
-
-    # Chat history container
-    if "messages" not in st.session_state:
-        st.session_state["messages"] = []
-
-    # Add user query
-    user_query = st.chat_input("Enter your query")
-
-    if user_query:
-        if user_query.strip():
-            st.session_state.messages.append({"role": "user", "content": user_query})
-
-            # Redirect stdout to capture agent's output
-            old_stdout = sys.stdout
-            sys.stdout = new_stdout = io.StringIO()
-
-            try:
-                agent.run(user_input=user_query)
-                output = new_stdout.getvalue()
-            except Exception as e:
-                output = f"An error occurred: {e}"
-            finally:
-                sys.stdout = old_stdout
-
-            st.session_state.messages.append({"role": "assistant", "content": output})
-            # Check for plots in the output
-            if "plt" in output or "figure" in output:
-                st.session_state.messages.append({"role": "assistant", "content": "Generated a plot."})
-
-    # Display chat messages
-    for message in st.session_state.messages:
-        if message["role"] == "user":
-            with st.chat_message("user"):
-                st.write(message["content"])
-        elif message["role"] == "assistant":
-            with st.chat_message("assistant"):
-                if "--- Explanation ---" in message["content"]:
-                    parts = message["content"].split("--- Python Code ---")
-                    explanation, code_snippet = parts[0], parts[1] if len(parts) > 1 else ""
-
-                    # Show explanation
-                    st.subheader("Explanation")
-                    st.write(explanation.replace("--- Explanation ---", "").strip())
-
-                    try:
-                        if code_snippet:
-                            st.subheader("Generated Python Code")
-                            st.code(code_snippet.strip())
-                    except:
-                        pass
-                
-                else:
-                    parts = message["content"]
-                    st.write(parts.replace("--- Agent respond ---", "").strip())
-
-
-
-                if "Generated a plot." in message["content"]:
-                    try:
-                        # Display the current Matplotlib figure
-                        fig = plt.gcf()
-                        st.pyplot(fig)
-                    except Exception as e:
-                        st.write(f"Error rendering plot: {e}")
-
-
-if __name__ == "__main__":
-    main()
+    app.main()
