@@ -10,14 +10,15 @@ from langchain.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 import json
 import numpy as np
-import re
 import matplotlib as plt
+from langchain.output_parsers import OutputFixingParser
+import re
 
 # First, create a Pydantic model for your output structure
 class PlotResponse(BaseModel):
-    query: str = Field(description="Description of the plot to be created")
-    explanation: str = Field(description="Explanation of the visualization")
-    code: str = Field(description="The code to create the plot")
+    query: str = Field(description="Description of what the code does")
+    explanation: str = Field(description="Detailed explanation of the analysis")
+    code: str = Field(description="The python code")
 
 class PandasAgent:
     def __init__(self, temperature: float, base_url: str, model_name: str, dataset_paths: dict):
@@ -31,6 +32,7 @@ class PandasAgent:
         self.api_key = os.getenv("PANDAS_API_KEY")
         self.llm = self.initialize_llm()
         self.output_parser = PydanticOutputParser(pydantic_object=PlotResponse)
+
 
     def initialize_llm(self) -> ChatOpenAI:
         """Initialize the language model."""
@@ -49,34 +51,13 @@ class PandasAgent:
             raise ValueError(f"Dataset '{df_key}' not found.")
         
         df = self.handler.get_data(df_key)
-        # suffix = (
-        #     f"You are working with a DataFrame. Columns are: {', '.join(df.columns)}. "
-        #     "Use proper syntax to access and manipulate data."
-        # )
-    #     prefix = (
-    #         f"""
-    # You are an expert Python programmer specializing in data processing and analysis. Your main responsibilities include:
-    # You are working with a DataFrame. Columns are: {', '.join(df.columns)}.
-    # Use proper syntax to access and manipulate data.
-    # 1. Writing clean, efficient Python code for data manipulation, cleaning, and transformation.
-    # 2. Implementing statistical methods and machine learning algorithms as needed.
-    # 3. Debugging and optimizing existing code for performance improvements.
-    # 4. Adhering to PEP 8 standards and ensuring code readability with meaningful variable and function names.
-
-    # Constraints:
-    # - Focus solely on data processing tasks; do not write non-Python code.
-    # - Provide only valid, executable Python code, including necessary comments for complex logic.
-    # - Avoid unnecessary complexity; prioritize readability and efficiency.
-    # """
-    #     )
 
         # Prefix: บริบททั่วไปที่กำหนดบทบาทและการตอบสนองของ Agent
         prefix = f"""
         You are a Python expert specializing in data processing and analysis. 
         You are working with a DataFrame. Columns are: {', '.join(df.columns)}.
-        Your primary role is to analyze and manipulate DataFrames in Python.
-        
-        {self.output_parser.get_format_instructions()}
+        Your role is to analyze and manipulate DataFrames in Python.
+        Your output must strictly follow this JSON format: {self.output_parser.get_format_instructions()}
         """
 
         # Suffix: รายละเอียดเฉพาะของบริบทและข้อกำหนดเพิ่มเติม
@@ -86,11 +67,9 @@ class PandasAgent:
         1. DO NOT include DataFrame loading code like 'pd.read_csv()' or 'df = pd.read_csv()' - the DataFrame is already loaded as 'df'.
         2. Always work with the existing 'df' variable directly.
         3. Your responses must follow this JSON format strictly:
-        {{
-        "query": "description of what the code does",
+        {{"query": "description of what the code does",
         "explanation": "detailed explanation of the analysis",
-        "code": "print('example')"  // Use single line breaks with \\n, NO triple quotes
-        }}
+        "code": "print('example')"  // Use single line breaks with \\n, NO triple quotes}}
         4. The code should:
        - Use clear variable names
        - Include comments for complex logic
@@ -103,8 +82,6 @@ class PandasAgent:
        - Use single quotes for strings
         6. DO NOT include any text outside of the JSON structure
         """
-
-
         return create_pandas_dataframe_agent(
             llm=self.llm,
             df=df,
@@ -180,23 +157,13 @@ class PandasAgent:
             return
             
         try:
-            # Add matplotlib to the context
-            import matplotlib.pyplot as plt
-            context['plt'] = plt
-            
             # Execute the code
             exec(code, context)
-            
-            # Show the plot if plt.show() was called
-            if 'plt' in context and plt.get_fignums():
-                plt.show()
-                
+
         except Exception as e:
             logging.error(f"Error executing code: {str(e)}")
             print(f"Error: {str(e)}")
-        finally:
-            # Clean up by closing any open plots
-            plt.close('all')
+
 
     def run(self, query: str, dataset_key: str):
         """Handle user interactions."""
@@ -213,7 +180,7 @@ class PandasAgent:
                 else:
                     parsed_output = response['output']
                 
-                # Validate against our Pydantic model
+                # Validate against Pydantic model
                 validated_output = PlotResponse(**parsed_output)
                 
                 print("\n--- Parsed Output ---")
@@ -226,14 +193,15 @@ class PandasAgent:
                     context = {
                         "pd": pd, 
                         "df": self.handler.get_data(dataset_key),
-                        "np": np,   # Add numpy if needed
+                        "np": np,   
                         "plt":plt, 
                     }
                     self.execute_code(code, context)
                 
             except json.JSONDecodeError as e:
                 logging.error(f"Error parsing JSON: {e}")
-                print("Raw output:", response['output'])
+                new_parser = OutputFixingParser.from_llm(parser=self.output_parser, llm=agent)
+                new_parser.parse(parsed_output)
             except Exception as e:
                 logging.error(f"Error processing output: {e}")
                 
@@ -255,6 +223,6 @@ if __name__ == '__main__':
         model_name="typhoon-v1.5x-70b-instruct",
         dataset_paths=file_paths
     )
-    agent.run(query= 'plot something from this df', 
+    agent.run(query= 'show me a deep insight and describe it', 
               dataset_key= 'Financials'
               )
